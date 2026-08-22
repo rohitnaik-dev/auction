@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { signup } from '@/app/login/actions'
-import { ArrowRight, Gavel } from 'lucide-react'
+import { ArrowRight, Gavel, Info, AlertCircle } from 'lucide-react'
 
 export default async function RegisterPage({
   searchParams,
@@ -23,13 +23,15 @@ export default async function RegisterPage({
         <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100">
           <form className="space-y-5" action={signup}>
             {resolvedSearchParams?.message && (
-              <div className="p-4 bg-amber-50 text-amber-800 text-sm rounded-xl border border-amber-100">
-                {resolvedSearchParams.message}
+              <div className="p-4 bg-indigo-50 text-indigo-900 text-sm rounded-xl border border-indigo-200 flex items-start gap-3 shadow-xs">
+                <Info className="w-5 h-5 text-indigo-600 flex-shrink-0 mt-0.5" />
+                <p className="font-medium">{resolvedSearchParams.message}</p>
               </div>
             )}
             {resolvedSearchParams?.error && (
-              <div className="p-4 bg-red-50 text-red-800 text-sm rounded-xl border border-red-100">
-                {resolvedSearchParams.error}
+              <div className="p-4 bg-red-50 text-red-800 text-sm rounded-xl border border-red-100 flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                <p>{resolvedSearchParams.error}</p>
               </div>
             )}
 

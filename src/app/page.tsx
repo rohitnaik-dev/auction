@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Gavel, Clock, Users, ShieldCheck, ArrowRight } from "lucide-react";
+import { Gavel, Clock, Users, ShieldCheck } from "lucide-react";
+import HomeHero from "@/components/home/HomeHero";
 
 export default function Home() {
   return (
@@ -34,21 +35,7 @@ export default function Home() {
           <p className="text-xl text-gray-600 mb-10 max-w-2xl mx-auto">
             A premium real-time auction platform designed for collectors and organizers. Secure, lightning-fast, and beautiful.
           </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link
-              href="/auctions/create"
-              className="inline-flex items-center justify-center gap-2 bg-indigo-900 text-white px-8 py-4 rounded-xl text-lg font-medium hover:bg-indigo-800 transition-colors shadow-sm"
-            >
-              Create an Auction
-              <ArrowRight className="w-5 h-5" />
-            </Link>
-            <Link
-              href="/register"
-              className="inline-flex items-center justify-center gap-2 bg-white text-indigo-900 border border-gray-200 px-8 py-4 rounded-xl text-lg font-medium hover:bg-gray-50 transition-colors shadow-sm"
-            >
-              Join an Auction
-            </Link>
-          </div>
+          <HomeHero />
         </section>
 
         {/* Features Section */}
