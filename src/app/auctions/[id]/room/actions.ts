@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/utils/supabase/server'
+import { cookies } from 'next/headers'
 
 // In-memory sliding window rate limiter (max 5 bids per 2 seconds per user)
 const bidRateLimits = new Map<string, number[]>()
@@ -21,20 +22,39 @@ function isRateLimited(userId: string, maxRequests = 5, windowMs = 2000): boolea
 
 export async function placeBidAction(itemId: string, amount: number) {
   const supabase = await createClient()
+  const cookieStore = await cookies()
   const { data: { user } } = await supabase.auth.getUser()
 
-  if (!user) {
-    return { error: 'Unauthorized: Please log in to place bids.' }
+  let bidderId: string | null = null
+
+  if (user) {
+    bidderId = user.id
+  } else {
+    const guestCookie = cookieStore.get('bidlive_guest_session')?.value
+    if (guestCookie) {
+      try {
+        const guestData = JSON.parse(guestCookie)
+        if (guestData.guestId) {
+          bidderId = guestData.guestId
+        }
+      } catch (e) {
+        console.error('Failed to parse guest cookie in placeBidAction', e)
+      }
+    }
   }
 
-  if (isRateLimited(user.id)) {
+  if (!bidderId) {
+    return { error: 'Unauthorized: Please join this auction using an invite link.' }
+  }
+
+  if (isRateLimited(bidderId)) {
     return { error: 'You are placing bids too rapidly. Please wait a second.' }
   }
 
   // Call the Postgres RPC function to safely place a bid and prevent race conditions
   const { data, error } = await supabase.rpc('place_bid', {
     p_item_id: itemId,
-    p_bidder_id: user.id,
+    p_bidder_id: bidderId,
     p_amount: amount
   })
 

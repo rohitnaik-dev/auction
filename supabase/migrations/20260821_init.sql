@@ -5,10 +5,12 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- 1. Tables Creation
 -- ==========================================
 
--- Profiles (Linked to auth.users)
+-- Profiles (Linked to auth.users for registered users, or standalone for guest bidders)
 CREATE TABLE IF NOT EXISTS profiles (
-    id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
+    id UUID PRIMARY KEY,
     full_name TEXT NOT NULL,
+    email TEXT,
+    role TEXT DEFAULT 'USER' NOT NULL,
     avatar_url TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL

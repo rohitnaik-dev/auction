@@ -3,24 +3,15 @@
 import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
+import { cookies } from 'next/headers'
 import { z } from 'zod'
+import crypto from 'crypto'
 
 const guestJoinSchema = z.object({
   fullName: z.string().min(2, 'Please enter your full name.'),
   email: z.string().email('Please enter a valid email address.'),
   token: z.string().min(1, 'Invalid invite token.'),
 })
-
-function getDeterministicGuestPassword(email: string): string {
-  // Generates a consistent, secure password for link-based guest access
-  const cleanEmail = email.toLowerCase().trim()
-  let hash = 0
-  for (let i = 0; i < cleanEmail.length; i++) {
-    hash = (hash << 5) - hash + cleanEmail.charCodeAt(i)
-    hash |= 0
-  }
-  return `BidLive@Guest_${Math.abs(hash)}_Secured!`
-}
 
 export async function joinAuctionAsGuestAction(formData: FormData) {
   const rawData = {
@@ -52,75 +43,71 @@ export async function joinAuctionAsGuestAction(formData: FormData) {
 
   const auctionId = invitation.auction_id
 
-  // 2. Check if a user is currently logged in
+  // 2. Check if a user is currently logged in as a full account
   const { data: { user: currentUser } } = await supabase.auth.getUser()
-  let activeUserId: string | null = null
+  const cookieStore = await cookies()
 
   if (currentUser) {
-    activeUserId = currentUser.id
-    // Update their profile name if provided
+    // Registered user joining
     await supabase.from('profiles').upsert({
       id: currentUser.id,
       full_name: fullName || currentUser.user_metadata?.full_name || 'Participant'
     })
-  } else {
-    // 3. Authenticate or create guest user via Supabase Auth
-    const guestPassword = getDeterministicGuestPassword(email)
 
-    // First attempt: Sign up
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email,
-      password: guestPassword,
-      options: {
-        data: {
-          full_name: fullName,
-        }
-      }
+    const { data: existingParticipant } = await supabase
+      .from('auction_participants')
+      .select('id')
+      .eq('auction_id', auctionId)
+      .eq('user_id', currentUser.id)
+      .maybeSingle()
+
+    if (!existingParticipant) {
+      await supabase.from('auction_participants').insert({
+        auction_id: auctionId,
+        user_id: currentUser.id,
+      })
+    }
+  } else {
+    // 3. Guest Bidder: Do NOT create an auth.users account
+    // Generate a guest UUID
+    const guestId = crypto.randomUUID()
+
+    // Create guest profile (role: 'GUEST')
+    const { error: profileError } = await supabase.from('profiles').upsert({
+      id: guestId,
+      full_name: fullName,
+      email: email,
+      role: 'GUEST'
     })
 
-    if (signUpData?.user && signUpData?.session) {
-      activeUserId = signUpData.user.id
-    } else if (signUpError?.message?.includes('already registered') || !signUpData?.session) {
-      // Second attempt: Sign in with the guest password
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password: guestPassword,
-      })
-
-      if (signInData?.user) {
-        activeUserId = signInData.user.id
-      } else {
-        // If password does not match (existing user with custom password),
-        // redirect to login with pre-filled next parameter
-        redirect(`/login?next=/join/${encodeURIComponent(token)}&message=${encodeURIComponent('An account with this email exists. Please enter your password to join.')}`)
-      }
+    if (profileError) {
+      console.error('Guest profile error:', profileError)
+      redirect(`/join/${encodeURIComponent(token)}?error=${encodeURIComponent('Failed to create guest participant profile.')}`)
     }
 
-    // Ensure public profile exists
-    if (activeUserId) {
-      await supabase.from('profiles').upsert({
-        id: activeUserId,
-        full_name: fullName
-      })
-    }
-  }
-
-  if (!activeUserId) {
-    redirect(`/join/${encodeURIComponent(token)}?error=${encodeURIComponent('Failed to verify user session. Please try again.')}`)
-  }
-
-  // 4. Add to auction participants
-  const { data: existingParticipant } = await supabase
-    .from('auction_participants')
-    .select('id')
-    .eq('auction_id', auctionId)
-    .eq('user_id', activeUserId)
-    .maybeSingle()
-
-  if (!existingParticipant) {
-    await supabase.from('auction_participants').insert({
+    // Add to auction participants
+    const { error: participantError } = await supabase.from('auction_participants').insert({
       auction_id: auctionId,
-      user_id: activeUserId,
+      user_id: guestId,
+    })
+
+    if (participantError) {
+      console.error('Guest participant error:', participantError)
+      redirect(`/join/${encodeURIComponent(token)}?error=${encodeURIComponent('Failed to register guest in auction.')}`)
+    }
+
+    // Set secure guest session cookie
+    cookieStore.set('bidlive_guest_session', JSON.stringify({
+      guestId,
+      fullName,
+      email,
+      auctionId,
+      role: 'GUEST'
+    }), {
+      path: '/',
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: 60 * 60 * 24 * 7 // 7 days
     })
   }
 
@@ -128,3 +115,4 @@ export async function joinAuctionAsGuestAction(formData: FormData) {
   revalidatePath('/dashboard')
   redirect(`/auctions/${auctionId}/room`)
 }
+
