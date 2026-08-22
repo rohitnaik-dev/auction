@@ -80,7 +80,7 @@ export default async function AuctionRoomPage({ params }: { params: Promise<{ id
   // Fetch items
   const { data: items } = await supabase
     .from('auction_items')
-    .select('*')
+    .select('*, winner:winner_id(id, full_name, email)')
     .eq('auction_id', resolvedParams.id)
     .order('order_index', { ascending: true })
 

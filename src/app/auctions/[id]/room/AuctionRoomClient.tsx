@@ -4,7 +4,27 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { placeBidAction, sellCurrentItemAction, endAuctionAction } from './actions'
 import { formatDistanceToNow } from 'date-fns'
-import { Clock, Users, ArrowUpCircle, Trophy, AlertCircle, Gavel, Loader2, Sparkles, Zap, Wifi } from 'lucide-react'
+import { 
+  Clock, 
+  Users, 
+  ArrowUpCircle, 
+  Trophy, 
+  AlertCircle, 
+  Gavel, 
+  Loader2, 
+  Sparkles, 
+  Zap, 
+  Wifi, 
+  Download, 
+  CheckCircle2, 
+  Image as ImageIcon, 
+  Receipt, 
+  User, 
+  Package, 
+  Eye, 
+  X,
+  ExternalLink 
+} from 'lucide-react'
 import clsx from 'clsx'
 
 // Lightweight Web Audio Chime & Gavel Synthesizer (zero bundle overhead)
@@ -77,6 +97,7 @@ export default function AuctionRoomClient({
   const [timeLeft, setTimeLeft] = useState<string>('')
   const [auctionStatus, setAuctionStatus] = useState<string>(auction.status)
   const [isConnected, setIsConnected] = useState(true)
+  const [zoomImage, setZoomImage] = useState<string | null>(null)
 
   // In-memory Profile Cache (Eliminates repeated network queries on incoming bids)
   const profileCache = useRef<Map<string, string>>(new Map())
@@ -96,7 +117,14 @@ export default function AuctionRoomClient({
         }
       })
     }
-  }, [currentUser, auction, initialParticipants])
+    if (Array.isArray(initialItems)) {
+      initialItems.forEach((it: any) => {
+        if (it?.winner_id && it?.winner?.full_name) {
+          profileCache.current.set(it.winner_id, String(it.winner.full_name))
+        }
+      })
+    }
+  }, [currentUser, auction, initialParticipants, initialItems])
 
   // Use refs for stable event handler access
   const activeItemRef = useRef<any>(activeItem)
@@ -239,9 +267,29 @@ export default function AuctionRoomClient({
           }))
         }
       })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'auction_items', filter: `auction_id=eq.${auction.id}` }, (payload: any) => {
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'auction_items', filter: `auction_id=eq.${auction.id}` }, async (payload: any) => {
         const updatedItem = payload.new
-        setItems(prev => prev.map(item => item.id === updatedItem.id ? updatedItem : item))
+
+        // Resolve Winner Name if present
+        if (updatedItem.winner_id) {
+          let winnerName = profileCache.current.get(updatedItem.winner_id)
+          if (!winnerName) {
+            const { data: winnerProf } = await supabase
+              .from('profiles')
+              .select('id, full_name, email')
+              .eq('id', updatedItem.winner_id)
+              .maybeSingle()
+            if (winnerProf) {
+              winnerName = winnerProf.full_name
+              profileCache.current.set(updatedItem.winner_id, winnerProf.full_name)
+              updatedItem.winner = winnerProf
+            }
+          } else {
+            updatedItem.winner = { id: updatedItem.winner_id, full_name: winnerName }
+          }
+        }
+
+        setItems(prev => prev.map(item => item.id === updatedItem.id ? { ...item, ...updatedItem } : item))
         
         // Trigger Confetti & Gavel Sound if item ended
         if (updatedItem.status === 'ENDED') {
@@ -260,7 +308,7 @@ export default function AuctionRoomClient({
 
         const currentActive = activeItemRef.current
         if (currentActive && updatedItem.id === currentActive.id) {
-          setActiveItem(updatedItem)
+          setActiveItem((prev: any) => ({ ...prev, ...updatedItem }))
         } else if (updatedItem.status === 'ACTIVE') {
           setActiveItem(updatedItem)
           // Fetch fresh bid history for the newly active item
@@ -348,28 +396,105 @@ export default function AuctionRoomClient({
     }
   }
 
+  // Export Full Auction Report as CSV (for host)
+  const handleExportCSV = () => {
+    if (!items || items.length === 0) return
+
+    const headers = [
+      'Lot #',
+      'Item Title',
+      'Description',
+      'Starting Price (INR)',
+      'Final Price / Current Bid (INR)',
+      'Status',
+      'Winner / Buyer Name',
+      'Winner ID'
+    ]
+
+    const rows = items.map((item, idx) => {
+      const winnerName = item.winner?.full_name || (item.winner_id ? profileCache.current.get(item.winner_id) : '') || (item.status === 'ENDED' && item.winner_id ? 'Buyer' : 'N/A')
+      const finalPrice = item.current_bid ? Number(item.current_bid) : Number(item.starting_price)
+      
+      return [
+        `"${idx + 1}"`,
+        `"${(item.title || '').replace(/"/g, '""')}"`,
+        `"${(item.description || '').replace(/"/g, '""')}"`,
+        `"${Number(item.starting_price || 0)}"`,
+        `"${finalPrice}"`,
+        `"${item.status}"`,
+        `"${(winnerName || 'Unsold').replace(/"/g, '""')}"`,
+        `"${item.winner_id || ''}"`
+      ]
+    })
+
+    const totalSales = items
+      .filter(i => i.status === 'ENDED' && i.winner_id)
+      .reduce((sum, i) => sum + Number(i.current_bid || 0), 0)
+
+    const metaRows = [
+      [`"Auction Title"`, `"${(auction.title || '').replace(/"/g, '""')}"`],
+      [`"Host / Organizer"`, `"${(auction.profiles?.full_name || 'Host').replace(/"/g, '""')}"`],
+      [`"Auction Date"`, `"${new Date(auction.start_time).toLocaleDateString()}"`],
+      [`"Auction Status"`, `"${auctionStatus}"`],
+      [`"Total Sales Volume (INR)"`, `"${totalSales}"`],
+      []
+    ]
+
+    const csvContent = [
+      ...metaRows.map(r => r.join(',')),
+      headers.join(','),
+      ...rows.map(r => r.join(','))
+    ].join('\r\n')
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const cleanTitle = (auction.title || 'Auction').replace(/[^a-zA-Z0-9_-]/g, '_')
+    link.setAttribute('href', url)
+    link.setAttribute('download', `${cleanTitle}_sales_report_${new Date().toISOString().split('T')[0]}.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  // Filter sold items
+  const soldItems = items.filter(i => i.status === 'ENDED')
+  const totalSalesRevenue = soldItems
+    .filter(i => i.winner_id)
+    .reduce((sum, i) => sum + Number(i.current_bid || i.starting_price || 0), 0)
+
   return (
     <div className="min-h-screen bg-[#F8F7F4] flex flex-col font-sans">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-20 shadow-2xs">
         <div>
           <h1 className="text-xl font-bold text-gray-900 tracking-tight flex items-center gap-2">
             <Gavel className="w-5 h-5 text-indigo-700" />
             {auction.title}
           </h1>
-          <p className="text-sm text-gray-500">Organized by {auction.profiles?.full_name || 'Host'}</p>
+          <p className="text-xs text-gray-500">Organized by <span className="font-semibold text-gray-700">{auction.profiles?.full_name || 'Host'}</span></p>
         </div>
-        <div className="flex items-center gap-4 sm:gap-6">
-          <div className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200">
+        <div className="flex items-center gap-3 sm:gap-4 flex-wrap">
+          {isCreator && (
+            <button
+              onClick={handleExportCSV}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl transition-colors shadow-2xs"
+              title="Export auction results and sales ledger to CSV"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Export CSV</span>
+            </button>
+          )}
+          <div className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-xl border border-gray-200 text-xs">
             <div className={clsx("w-2.5 h-2.5 rounded-full animate-pulse", isConnected ? (isLive ? "bg-red-500" : "bg-emerald-500") : "bg-amber-500")} />
-            <span className="font-semibold text-xs text-gray-800 tracking-wide">{isConnected ? auctionStatus : 'Reconnecting...'}</span>
+            <span className="font-semibold text-gray-800 tracking-wide">{isConnected ? auctionStatus : 'Reconnecting...'}</span>
           </div>
-          <div className="bg-gray-100 px-4 py-1.5 rounded-lg border border-gray-200 flex items-center gap-2 font-mono text-base sm:text-lg font-bold text-gray-800">
+          <div className="bg-gray-100 px-3.5 py-1.5 rounded-xl border border-gray-200 flex items-center gap-2 font-mono text-sm sm:text-base font-bold text-gray-800">
             <Clock className="w-4 h-4 text-gray-500" />
             {timeLeft || '00:00:00'}
           </div>
           {isCreator && isLive && (
-             <button onClick={handleEndAuction} className="text-sm text-red-600 font-medium hover:text-red-700 transition-colors">
+             <button onClick={handleEndAuction} className="text-xs text-red-600 font-bold hover:text-red-700 transition-colors px-2 py-1 bg-red-50 hover:bg-red-100 rounded-lg">
                End Auction
              </button>
           )}
@@ -381,82 +506,123 @@ export default function AuctionRoomClient({
         {/* Left Column: Active Item & Bidding */}
         <div className="lg:col-span-8 flex flex-col gap-6">
           
-          {/* Active Item Card */}
+          {/* Active Item Card - Prominent Display for ALL Users */}
           {activeItem ? (
-            <div className="bg-white rounded-3xl p-8 shadow-sm border border-gray-100 relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-amber-500"></div>
+            <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-gray-100 relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-600 via-purple-600 to-amber-500"></div>
               
+              <div className="flex items-center justify-between gap-3 mb-5">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-bold uppercase tracking-wider">
+                  <Package className="w-3.5 h-3.5" />
+                  {activeItem.status === 'ACTIVE' ? 'Currently Under the Hammer' : `Item Status: ${activeItem.status}`}
+                </div>
+                <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+                  Lot #{items.findIndex(i => i.id === activeItem.id) + 1} of {items.length}
+                </span>
+              </div>
+
+              {/* Product Image & Product Title Container */}
               <div className="flex flex-col md:flex-row gap-6 mb-6">
-                {activeItem.image_url && (
-                  <div className="md:w-64 h-52 flex-shrink-0 rounded-2xl overflow-hidden border border-gray-200 bg-gray-50 shadow-xs relative">
-                    <img 
-                      src={activeItem.image_url} 
-                      alt={activeItem.title} 
-                      className="w-full h-full object-cover" 
-                    />
+                {/* Product Image */}
+                <div className="md:w-72 h-60 sm:h-64 flex-shrink-0 rounded-2xl overflow-hidden border border-gray-200 bg-gray-50 shadow-xs relative group">
+                  {activeItem.image_url ? (
+                    <>
+                      <img 
+                        src={activeItem.image_url} 
+                        alt={activeItem.title} 
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 cursor-pointer"
+                        onClick={() => setZoomImage(activeItem.image_url)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setZoomImage(activeItem.image_url)}
+                        className="absolute bottom-2.5 right-2.5 bg-gray-900/70 hover:bg-gray-900 text-white p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-[11px]"
+                        title="Zoom photo"
+                      >
+                        <Eye className="w-3.5 h-3.5" /> View
+                      </button>
+                    </>
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center text-gray-400 p-4 text-center">
+                      <ImageIcon className="w-12 h-12 mb-2 text-gray-300" />
+                      <span className="text-xs font-medium">No image uploaded</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Product Name & Description */}
+                <div className="flex-1 flex flex-col justify-between">
+                  <div>
+                    <h2 className="text-2xl sm:text-3xl font-extrabold text-gray-900 mb-2.5 tracking-tight leading-tight">
+                      {activeItem.title}
+                    </h2>
+                    <p className="text-gray-600 text-sm sm:text-base leading-relaxed line-clamp-4">
+                      {activeItem.description || "No description provided for this item."}
+                    </p>
                   </div>
-                )}
-                <div className="flex-1">
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-semibold uppercase tracking-wider mb-3">
-                    {activeItem.status === 'ACTIVE' ? 'Current Item' : `Item Status: ${activeItem.status}`}
+
+                  <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-4 text-xs text-gray-500">
+                    <span>Min Increment: <strong className="text-gray-800">₹{Number(minIncrementNumber).toLocaleString()}</strong></span>
                   </div>
-                  <h2 className="text-3xl font-bold text-gray-900 mb-2">{activeItem.title}</h2>
-                  <p className="text-gray-600 text-base leading-relaxed">{activeItem.description || "No description provided."}</p>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-6 mt-6 p-6 bg-gray-50 rounded-2xl border border-gray-100">
+              {/* Pricing Cards */}
+              <div className="grid grid-cols-2 gap-4 sm:gap-6 mt-4 p-5 sm:p-6 bg-gray-50 rounded-2xl border border-gray-100">
                 <div>
-                  <p className="text-sm text-gray-500 font-medium uppercase tracking-wider mb-1">Starting Price</p>
-                  <p className="text-2xl font-semibold text-gray-800">₹{startingPriceNumber.toLocaleString()}</p>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider mb-1">Starting Price</p>
+                  <p className="text-xl sm:text-2xl font-bold text-gray-800">₹{startingPriceNumber.toLocaleString()}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500 font-medium uppercase tracking-wider mb-1">Current Bid</p>
-                  <p className="text-4xl font-bold text-indigo-700">₹{Number(currentHighestBid).toLocaleString()}</p>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider mb-1">Current Highest Bid</p>
+                  <p className="text-3xl sm:text-4xl font-black text-indigo-700">₹{Number(currentHighestBid).toLocaleString()}</p>
                 </div>
               </div>
 
               {/* Bidding Controls */}
               {isLive && activeItem.status === 'ACTIVE' ? (
-                <div className="mt-8 pt-8 border-t border-gray-100">
+                <div className="mt-8 pt-6 border-t border-gray-100">
                   {isCreator ? (
-                    <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-6 flex items-center justify-between">
+                    <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
                       <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600">
+                        <div className="w-12 h-12 bg-indigo-100 rounded-2xl flex items-center justify-center text-indigo-600 flex-shrink-0">
                           <Gavel className="w-6 h-6" />
                         </div>
                         <div>
-                          <h3 className="text-lg font-semibold text-indigo-900">Host Controls</h3>
-                          <p className="text-indigo-700">Conclude bidding on this item and activate the next one.</p>
+                          <h3 className="text-base font-bold text-indigo-900">Host Auctioneering Controls</h3>
+                          <p className="text-xs text-indigo-700 mt-0.5">Drop the gavel to sell this lot to the highest bidder and advance to the next item.</p>
                         </div>
                       </div>
                       <button 
                         onClick={handleSellItem}
                         disabled={isSelling}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-bold shadow-sm transition-colors flex items-center gap-2 disabled:opacity-50"
+                        className="w-full sm:w-auto bg-indigo-900 hover:bg-indigo-800 text-white px-8 py-3.5 rounded-xl font-bold text-sm shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
                       >
                         {isSelling ? (
                           <>
                             <Loader2 className="w-4 h-4 animate-spin" />
-                            Processing...
+                            Selling...
                           </>
                         ) : (
-                          'Sell Item'
+                          <>
+                            <Gavel className="w-4 h-4" />
+                            Sell Item (Drop Gavel)
+                          </>
                         )}
                       </button>
                     </div>
                   ) : isWinning ? (
-                    <div className="bg-green-50 border border-green-200 rounded-2xl p-6 flex items-center justify-between">
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 flex items-center justify-between">
                       <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center text-green-600">
+                        <div className="w-12 h-12 bg-emerald-100 rounded-2xl flex items-center justify-center text-emerald-600">
                           <Trophy className="w-6 h-6" />
                         </div>
                         <div>
-                          <h3 className="text-lg font-semibold text-green-900">You are winning!</h3>
-                          <p className="text-green-700">You hold the current highest bid at ₹{Number(currentHighestBid).toLocaleString()}.</p>
+                          <h3 className="text-base font-bold text-emerald-900">You are winning this lot!</h3>
+                          <p className="text-xs text-emerald-700 mt-0.5">You currently hold the top bid at ₹{Number(currentHighestBid).toLocaleString()}.</p>
                         </div>
                       </div>
-                      <span className="text-green-600 font-semibold flex items-center gap-1 text-sm bg-green-100 px-3 py-1.5 rounded-lg">
+                      <span className="text-emerald-700 font-bold flex items-center gap-1 text-xs bg-emerald-100 px-3 py-1.5 rounded-xl">
                         <Sparkles className="w-4 h-4" /> Top Bidder
                       </span>
                     </div>
@@ -466,7 +632,7 @@ export default function AuctionRoomClient({
                       <button 
                         type="submit"
                         disabled={!isLive || isBidding}
-                        className="w-full bg-amber-500 hover:bg-amber-600 text-white px-8 py-5 rounded-2xl font-bold text-2xl shadow-sm transition-colors flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="w-full bg-amber-500 hover:bg-amber-600 text-white px-8 py-4 sm:py-5 rounded-2xl font-black text-xl sm:text-2xl shadow-sm transition-colors flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isBidding ? (
                           <>
@@ -475,15 +641,15 @@ export default function AuctionRoomClient({
                           </>
                         ) : (
                           <>
-                            Bid ₹{minNextBid.toLocaleString()}
+                            Place Bid: ₹{minNextBid.toLocaleString()}
                             <ArrowUpCircle className="w-6 h-6" />
                           </>
                         )}
                       </button>
 
                       {/* Quick-Bid Increment Chips */}
-                      <div className="flex items-center gap-3 pt-1">
-                        <span className="text-xs font-semibold text-gray-500 flex items-center gap-1">
+                      <div className="flex items-center gap-2 sm:gap-3 pt-1 flex-wrap">
+                        <span className="text-xs font-bold text-gray-500 flex items-center gap-1 mr-1">
                           <Zap className="w-3.5 h-3.5 text-amber-500" />
                           Quick Bid:
                         </span>
@@ -497,7 +663,7 @@ export default function AuctionRoomClient({
                               type="button"
                               disabled={!isLive || isBidding}
                               onClick={() => handlePlaceBidAmount(quickAmount)}
-                              className="flex-1 py-2 px-3 rounded-xl border border-amber-200 bg-amber-50/70 hover:bg-amber-100 text-amber-900 text-xs font-bold transition-colors disabled:opacity-50"
+                              className="flex-1 py-2 px-3 rounded-xl border border-amber-200 bg-amber-50/80 hover:bg-amber-100 text-amber-900 text-xs font-bold transition-colors disabled:opacity-50"
                             >
                               +₹{(minIncrementNumber * multiplier).toLocaleString()} (₹{quickAmount.toLocaleString()})
                             </button>
@@ -507,7 +673,7 @@ export default function AuctionRoomClient({
                     </form>
                   )}
                   {bidError && (
-                    <p className="mt-3 text-red-600 flex items-center gap-2 text-sm font-medium">
+                    <p className="mt-3 text-red-600 flex items-center gap-2 text-xs font-semibold">
                       <AlertCircle className="w-4 h-4 flex-shrink-0" />
                       {bidError}
                     </p>
@@ -515,11 +681,11 @@ export default function AuctionRoomClient({
                 </div>
               ) : (
                 <div className="mt-8 bg-gray-100 rounded-2xl p-6 text-center border border-gray-200">
-                  <p className="text-gray-600 font-medium text-lg">
+                  <p className="text-gray-700 font-semibold text-base">
                     {auctionStatus === 'ENDED' 
                       ? 'This auction has concluded.' 
                       : activeItem.status === 'ENDED' 
-                        ? 'This item has ended.' 
+                        ? 'Bidding for this item has ended.' 
                         : 'Bidding has not started yet.'}
                   </p>
                 </div>
@@ -527,44 +693,146 @@ export default function AuctionRoomClient({
             </div>
           ) : (
              <div className="bg-white rounded-3xl p-12 text-center shadow-sm border border-gray-100">
-               <p className="text-gray-500 text-lg">No items available in this auction.</p>
+               <p className="text-gray-500 text-base">No items available in this auction.</p>
              </div>
           )}
 
-          {/* All Items Roster */}
-          <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
-            <h3 className="text-lg font-bold text-gray-900 mb-4">Auction Catalog ({items.length} items)</h3>
+          {/* NEW DIV: Sold Items & Winning Buyers Ledger */}
+          <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <Receipt className="w-5 h-5 text-emerald-600" />
+                  Sold Items & Winning Buyers Ledger
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">Live record of sold lots, buyer names, and hammer prices.</p>
+              </div>
+              <div className="flex items-center gap-3">
+                {soldItems.length > 0 && (
+                  <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">
+                    Total Sales: ₹{totalSalesRevenue.toLocaleString()}
+                  </span>
+                )}
+                {isCreator && (
+                  <button
+                    onClick={handleExportCSV}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold transition-colors shadow-2xs"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Export CSV
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {soldItems.length === 0 ? (
+              <div className="border border-dashed border-gray-200 rounded-2xl p-8 text-center bg-gray-50/50">
+                <Trophy className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                <p className="text-xs font-semibold text-gray-600">No items have concluded yet.</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">As items are sold by the host, winning buyer names and final sold prices will be listed here in real time.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {soldItems.map((item, idx) => {
+                  const winnerName = item.winner?.full_name || (item.winner_id ? profileCache.current.get(item.winner_id) : '') || 'Winning Bidder'
+                  const isCurrentBuyer = item.winner_id === currentUser.id
+                  const soldPrice = item.current_bid ? Number(item.current_bid) : Number(item.starting_price)
+
+                  return (
+                    <div 
+                      key={item.id || idx}
+                      className="p-4 rounded-2xl border border-emerald-100 bg-emerald-50/30 flex gap-4 items-center shadow-2xs hover:shadow-xs transition-shadow"
+                    >
+                      {/* Item Thumbnail */}
+                      {item.image_url ? (
+                        <img 
+                          src={item.image_url} 
+                          alt={item.title} 
+                          className="w-16 h-16 rounded-xl object-cover border border-emerald-200 bg-white flex-shrink-0 cursor-pointer"
+                          onClick={() => setZoomImage(item.image_url)}
+                        />
+                      ) : (
+                        <div className="w-16 h-16 rounded-xl bg-emerald-100/50 border border-emerald-200 flex items-center justify-center text-emerald-600 flex-shrink-0">
+                          <Package className="w-6 h-6" />
+                        </div>
+                      )}
+
+                      {/* Item & Buyer Details */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between gap-1 mb-1">
+                          <h4 className="font-bold text-gray-900 text-sm truncate" title={item.title}>
+                            {item.title}
+                          </h4>
+                          <span className="text-[10px] bg-emerald-600 text-white font-bold px-2 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0">
+                            SOLD
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 text-xs text-gray-700 mb-2">
+                          <User className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                          <span className="truncate">
+                            Buyer: <strong className={clsx(isCurrentBuyer ? "text-emerald-700 font-extrabold" : "text-gray-900 font-bold")}>
+                              {winnerName} {isCurrentBuyer && '(You)'}
+                            </strong>
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between text-xs pt-1 border-t border-emerald-100">
+                          <span className="text-gray-500 text-[11px]">Start: ₹{Number(item.starting_price).toLocaleString()}</span>
+                          <span className="font-extrabold text-emerald-800 text-sm">
+                            ₹{soldPrice.toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Auction Catalog (All Items Roster) */}
+          <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-gray-100">
+            <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center justify-between">
+              <span>Auction Catalog ({items.length} lots)</span>
+              <span className="text-xs text-gray-400 font-normal">Live Catalog</span>
+            </h3>
             <div className="space-y-3">
               {items.map((item, idx) => (
                 <div 
                   key={item.id} 
                   className={clsx(
-                    "p-4 rounded-2xl border flex items-center justify-between transition-all",
-                    item.id === activeItem?.id ? "border-indigo-500 bg-indigo-50/40 shadow-sm" : "border-gray-200 bg-gray-50/50"
+                    "p-4 rounded-2xl border flex items-center justify-between transition-all gap-3",
+                    item.id === activeItem?.id ? "border-indigo-500 bg-indigo-50/40 shadow-sm ring-1 ring-indigo-500/20" : "border-gray-200 bg-gray-50/50"
                   )}
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <span className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-700 flex-shrink-0">
                       {idx + 1}
                     </span>
-                    {item.image_url && (
+                    {item.image_url ? (
                       <img 
                         src={item.image_url} 
                         alt={item.title} 
-                        className="w-10 h-10 object-cover rounded-lg border border-gray-200 flex-shrink-0 bg-white" 
+                        className="w-12 h-12 object-cover rounded-xl border border-gray-200 flex-shrink-0 bg-white cursor-pointer"
+                        onClick={() => setZoomImage(item.image_url)}
                       />
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl bg-gray-200 flex items-center justify-center text-gray-400 flex-shrink-0">
+                        <ImageIcon className="w-5 h-5" />
+                      </div>
                     )}
-                    <div>
-                      <p className="font-semibold text-gray-900 line-clamp-1">{item.title}</p>
-                      <p className="text-xs text-gray-500">
-                        Starting: ₹{Number(item.starting_price).toLocaleString()} • Current: ₹{Number(item.current_bid || item.starting_price).toLocaleString()}
+                    <div className="min-w-0">
+                      <p className="font-bold text-gray-900 text-sm truncate">{item.title}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Start: ₹{Number(item.starting_price).toLocaleString()} • {item.status === 'ENDED' ? 'Final' : 'Current'}: <strong className="text-gray-800">₹{Number(item.current_bid || item.starting_price).toLocaleString()}</strong>
                       </p>
                     </div>
                   </div>
                   <span className={clsx(
-                    "text-xs px-2.5 py-1 rounded-full font-semibold uppercase tracking-wider",
+                    "text-xs px-2.5 py-1 rounded-full font-bold uppercase tracking-wider flex-shrink-0",
                     item.status === 'ACTIVE' ? "bg-amber-100 text-amber-800" :
-                    item.status === 'ENDED' ? "bg-gray-200 text-gray-600" : "bg-blue-50 text-blue-700"
+                    item.status === 'ENDED' ? "bg-emerald-100 text-emerald-800" : "bg-blue-50 text-blue-700"
                   )}>
                     {item.status}
                   </span>
@@ -641,6 +909,28 @@ export default function AuctionRoomClient({
           </div>
         </div>
       </main>
+
+      {/* Image Full-Size Lightbox Modal */}
+      {zoomImage && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200"
+          onClick={() => setZoomImage(null)}
+        >
+          <div className="relative max-w-3xl max-h-[90vh] bg-white rounded-3xl p-3 shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <button
+              onClick={() => setZoomImage(null)}
+              className="absolute top-4 right-4 bg-gray-900/70 hover:bg-gray-900 text-white p-2 rounded-full transition-colors z-10"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img 
+              src={zoomImage} 
+              alt="Enlarged Item" 
+              className="max-h-[80vh] w-auto rounded-2xl object-contain"
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
