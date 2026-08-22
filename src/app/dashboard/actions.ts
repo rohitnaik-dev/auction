@@ -3,86 +3,152 @@
 import { createClient } from '@/utils/supabase/server'
 import { revalidatePath } from 'next/cache'
 
-export async function seedDemoAuction() {
+export async function addAuctionItemAction(
+  auctionId: string, 
+  itemData: {
+    title: string
+    description?: string
+    starting_price: number
+    min_bid_increment: number
+    image_url?: string
+  }
+) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  if (!user) return { error: 'Unauthorized' }
-
-  const now = new Date()
-  const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000)
-
-  // Ensure profile exists (in case trigger or signup missed it)
-  const { data: profile } = await supabase.from('profiles').select('id').eq('id', user.id).maybeSingle()
-  if (!profile) {
-    await supabase.from('profiles').insert({
-      id: user.id,
-      full_name: user.user_metadata?.full_name || 'Auction Organizer'
-    })
+  if (!user) {
+    return { error: 'Unauthorized: Please log in.' }
   }
 
-  // Create Auction
-  const { data: auction, error: auctionError } = await supabase
+  // Verify creator ownership
+  const { data: auction } = await supabase
     .from('auctions')
+    .select('id, creator_id')
+    .eq('id', auctionId)
+    .maybeSingle()
+
+  if (!auction || auction.creator_id !== user.id) {
+    return { error: 'Unauthorized: Only the auction creator can add items.' }
+  }
+
+  // Get current max order_index
+  const { data: existingItems } = await supabase
+    .from('auction_items')
+    .select('order_index')
+    .eq('auction_id', auctionId)
+    .order('order_index', { ascending: false })
+    .limit(1)
+
+  const nextOrderIndex = (existingItems && existingItems.length > 0) ? (existingItems[0].order_index + 1) : 0
+
+  const { data: newItem, error } = await supabase
+    .from('auction_items')
     .insert({
-      creator_id: user.id,
-      title: "Weekend Collectors Auction",
-      description: "An exclusive selection of vintage cameras, classic timepieces, and rare collectibles.",
-      status: 'SCHEDULED',
-      start_time: now.toISOString(),
-      end_time: oneHourLater.toISOString(),
+      auction_id: auctionId,
+      title: itemData.title.trim(),
+      description: itemData.description?.trim() || '',
+      starting_price: Number(itemData.starting_price),
+      current_bid: Number(itemData.starting_price),
+      min_bid_increment: Number(itemData.min_bid_increment) || 100,
+      image_url: itemData.image_url?.trim() || null,
+      status: 'PENDING',
+      order_index: nextOrderIndex
     })
     .select()
     .single()
 
-  if (auctionError) return { error: auctionError.message }
-
-  // Create Items
-  const items = [
-    {
-      auction_id: auction.id,
-      title: "Vintage Film Camera",
-      description: "Professional 35mm camera in excellent condition. Includes original leather case and a 50mm f/1.4 lens.",
-      starting_price: 5000,
-      min_bid_increment: 500,
-      image_url: "https://images.unsplash.com/photo-1516035069371-29a1b244cc32?w=800&auto=format&fit=crop&q=80",
-      status: 'PENDING',
-      order_index: 0
-    },
-    {
-      auction_id: auction.id,
-      title: "Mechanical Watch",
-      description: "A beautifully restored 1960s mechanical chronograph with a leather strap. Fully serviced.",
-      starting_price: 12000,
-      min_bid_increment: 1000,
-      image_url: "https://images.unsplash.com/photo-1524805444758-089113d48a6d?w=800&auto=format&fit=crop&q=80",
-      status: 'PENDING',
-      order_index: 1
-    },
-    {
-      auction_id: auction.id,
-      title: "Classic Vinyl Collection",
-      description: "A curated collection of 10 original press classic rock vinyl records in near-mint condition.",
-      starting_price: 3000,
-      min_bid_increment: 200,
-      image_url: "https://images.unsplash.com/photo-1539185441755-769473a23570?w=800&auto=format&fit=crop&q=80",
-      status: 'PENDING',
-      order_index: 2
-    },
-    {
-      auction_id: auction.id,
-      title: "Handcrafted Guitar",
-      description: "A custom-built acoustic guitar featuring rosewood back and sides with a solid spruce top.",
-      starting_price: 15000,
-      min_bid_increment: 1500,
-      image_url: "https://images.unsplash.com/photo-1510915361894-db8b60106cb1?w=800&auto=format&fit=crop&q=80",
-      status: 'PENDING',
-      order_index: 3
-    }
-  ]
-
-  await supabase.from('auction_items').insert(items)
+  if (error) {
+    return { error: error.message }
+  }
 
   revalidatePath('/dashboard')
+  revalidatePath(`/auctions/${auctionId}/room`)
+  return { success: true, item: newItem }
+}
+
+export async function updateAuctionItemAction(
+  itemId: string,
+  auctionId: string,
+  itemData: {
+    title: string
+    description?: string
+    starting_price: number
+    min_bid_increment: number
+    image_url?: string
+  }
+) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (!user) {
+    return { error: 'Unauthorized: Please log in.' }
+  }
+
+  // Verify creator ownership
+  const { data: auction } = await supabase
+    .from('auctions')
+    .select('id, creator_id')
+    .eq('id', auctionId)
+    .maybeSingle()
+
+  if (!auction || auction.creator_id !== user.id) {
+    return { error: 'Unauthorized: Only the auction creator can edit items.' }
+  }
+
+  const { data: updatedItem, error } = await supabase
+    .from('auction_items')
+    .update({
+      title: itemData.title.trim(),
+      description: itemData.description?.trim() || '',
+      starting_price: Number(itemData.starting_price),
+      min_bid_increment: Number(itemData.min_bid_increment) || 100,
+      image_url: itemData.image_url?.trim() || null,
+    })
+    .eq('id', itemId)
+    .eq('auction_id', auctionId)
+    .select()
+    .single()
+
+  if (error) {
+    return { error: error.message }
+  }
+
+  revalidatePath('/dashboard')
+  revalidatePath(`/auctions/${auctionId}/room`)
+  return { success: true, item: updatedItem }
+}
+
+export async function deleteAuctionItemAction(itemId: string, auctionId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (!user) {
+    return { error: 'Unauthorized: Please log in.' }
+  }
+
+  // Verify creator ownership
+  const { data: auction } = await supabase
+    .from('auctions')
+    .select('id, creator_id')
+    .eq('id', auctionId)
+    .maybeSingle()
+
+  if (!auction || auction.creator_id !== user.id) {
+    return { error: 'Unauthorized: Only the auction creator can delete items.' }
+  }
+
+  const { error } = await supabase
+    .from('auction_items')
+    .delete()
+    .eq('id', itemId)
+    .eq('auction_id', auctionId)
+
+  if (error) {
+    return { error: error.message }
+  }
+
+  revalidatePath('/dashboard')
+  revalidatePath(`/auctions/${auctionId}/room`)
   return { success: true }
 }
+

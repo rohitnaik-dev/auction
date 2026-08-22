@@ -1,7 +1,6 @@
 import { createClient } from '@/utils/supabase/server'
 import Link from 'next/link'
-import { PlusCircle, Clock, CheckCircle, Flame } from 'lucide-react'
-import { seedDemoAuction } from './actions'
+import { PlusCircle, Clock, CheckCircle } from 'lucide-react'
 import RecentAuctionsTable from '@/components/dashboard/RecentAuctionsTable'
 
 export default async function DashboardPage() {
@@ -41,12 +40,6 @@ export default async function DashboardPage() {
           <p className="text-gray-500 mt-1">Manage your auctions, inspect items, and monitor bidding activity.</p>
         </div>
         <div className="flex items-center gap-4">
-          <form action={async () => { "use server"; await seedDemoAuction(); }}>
-            <button className="inline-flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-700 px-5 py-2.5 rounded-xl font-medium hover:bg-gray-50 transition-colors shadow-sm text-sm">
-              <Flame className="w-4 h-4 text-amber-500" />
-              Seed Demo
-            </button>
-          </form>
           <Link 
             href="/auctions/create" 
             className="inline-flex items-center justify-center gap-2 bg-indigo-900 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-indigo-800 transition-colors shadow-sm text-sm"
