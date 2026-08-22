@@ -2,6 +2,7 @@ import { createClient } from '@/utils/supabase/server'
 import Link from 'next/link'
 import { PlusCircle, Clock, CheckCircle, Flame } from 'lucide-react'
 import { seedDemoAuction } from './actions'
+import RecentAuctionsTable from '@/components/dashboard/RecentAuctionsTable'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -27,17 +28,17 @@ export default async function DashboardPage() {
 
   const { data: recentAuctions } = await supabase
     .from('auctions')
-    .select('*')
+    .select('*, auction_items(*)')
     .eq('creator_id', user.id)
     .order('created_at', { ascending: false })
-    .limit(5)
+    .limit(10)
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Overview</h1>
-          <p className="text-gray-500 mt-1">Manage your auctions and bidding activity.</p>
+          <p className="text-gray-500 mt-1">Manage your auctions, inspect items, and monitor bidding activity.</p>
         </div>
         <div className="flex items-center gap-4">
           <form action={async () => { "use server"; await seedDemoAuction(); }}>
@@ -80,37 +81,15 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="px-6 py-5 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-900">Recent Auctions</h2>
+      <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden p-6 sm:p-8">
+        <div className="flex items-center justify-between pb-6 mb-6 border-b border-gray-100">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900 tracking-tight">Recent Auctions</h2>
+            <p className="text-sm text-gray-500 mt-0.5">Click any auction to inspect all items and live statuses.</p>
+          </div>
         </div>
-        <div className="p-6">
-          {recentAuctions && recentAuctions.length > 0 ? (
-            <ul className="divide-y divide-gray-100">
-              {recentAuctions.map(auction => (
-                <li key={auction.id} className="py-4 flex items-center justify-between">
-                  <div>
-                    <h4 className="font-medium text-gray-900">{auction.title}</h4>
-                    <p className="text-sm text-gray-500 mt-1">Status: {auction.status}</p>
-                  </div>
-                  <Link href={`/auctions/${auction.id}/invite`} className="text-sm text-indigo-600 font-medium hover:text-indigo-700">
-                    Manage / Invite &rarr;
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="text-center py-12">
-              <p className="text-gray-500 mb-4">You haven't created any auctions yet.</p>
-              <Link 
-                href="/auctions/create" 
-                className="inline-flex text-sm font-medium text-indigo-600 hover:text-indigo-700"
-              >
-                Create your first auction &rarr;
-              </Link>
-            </div>
-          )}
-        </div>
+        
+        <RecentAuctionsTable auctions={(recentAuctions as any) || []} />
       </div>
     </div>
   )

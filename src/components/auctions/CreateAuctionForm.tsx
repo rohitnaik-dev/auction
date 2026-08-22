@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createAuction } from '@/app/auctions/create/actions'
-import { PlusCircle, Trash2, ArrowRight, ArrowLeft, Loader2, Edit3, Check, Image as ImageIcon, X } from 'lucide-react'
+import { PlusCircle, Trash2, ArrowRight, ArrowLeft, Loader2, Edit3, Check, Image as ImageIcon, X, UploadCloud, Link as LinkIcon } from 'lucide-react'
 
 export default function CreateAuctionForm() {
   const router = useRouter()
@@ -11,6 +11,8 @@ export default function CreateAuctionForm() {
   const [items, setItems] = useState<any[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [imageInputMode, setImageInputMode] = useState<'upload' | 'url'>('upload')
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Calculate tomorrow's minimum date string in YYYY-MM-DD
   const minDate = useMemo(() => {
@@ -36,6 +38,56 @@ export default function CreateAuctionForm() {
   })
 
   const [error, setError] = useState('')
+
+  const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!file.type.startsWith('image/')) {
+      setError('Please select a valid image file (PNG, JPG, WEBP, GIF).')
+      return
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setError('Image file must be under 10MB.')
+      return
+    }
+
+    setError('')
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const rawDataUrl = event.target?.result as string
+      
+      // Resize & compress via Canvas for rapid network and DB performance
+      const img = new window.Image()
+      img.onload = () => {
+        const maxDim = 1200
+        let { width, height } = img
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width)
+            width = maxDim
+          } else {
+            width = Math.round((width * maxDim) / height)
+            height = maxDim
+          }
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height)
+          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85)
+          setItemForm(prev => ({ ...prev, imageUrl: compressedDataUrl }))
+        } else {
+          setItemForm(prev => ({ ...prev, imageUrl: rawDataUrl }))
+        }
+      }
+      img.src = rawDataUrl
+    }
+    reader.readAsDataURL(file)
+  }
 
   const handleSaveItem = () => {
     setError('')
@@ -420,43 +472,126 @@ export default function CreateAuctionForm() {
               ></textarea>
             </div>
 
-            {/* Image URL Input & Preview */}
+            {/* Image Upload / URL Input */}
             <div className="space-y-2">
-              <label className="text-xs font-semibold text-gray-600 flex items-center justify-between">
-                <span>Item Image URL</span>
-                {itemForm.imageUrl && <span className="text-indigo-600 text-xs">Preview active</span>}
-              </label>
-              <div className="flex gap-3 items-center">
-                <input 
-                  value={itemForm.imageUrl} 
-                  onChange={(e) => setItemForm({...itemForm, imageUrl: e.target.value})} 
-                  className="flex-1 px-4 py-3 rounded-xl border border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors text-sm" 
-                  placeholder="https://images.unsplash.com/... or image link" 
-                />
-                {itemForm.imageUrl ? (
-                  <div className="relative group flex-shrink-0">
-                    <img 
-                      src={itemForm.imageUrl} 
-                      alt="Preview" 
-                      className="w-12 h-12 rounded-xl object-cover border border-indigo-200 shadow-sm"
-                      onError={(e) => {
-                        (e.target as HTMLElement).style.display = 'none'
-                      }}
-                    />
-                    <button 
-                      type="button" 
-                      onClick={() => setItemForm({ ...itemForm, imageUrl: '' })}
-                      className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="w-12 h-12 rounded-xl border border-dashed border-gray-300 flex items-center justify-center text-gray-400 flex-shrink-0">
-                    <ImageIcon className="w-5 h-5" />
-                  </div>
-                )}
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-gray-700">Item Image</label>
+                <div className="flex items-center gap-1 bg-gray-100 p-0.5 rounded-lg text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setImageInputMode('upload')}
+                    className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                      imageInputMode === 'upload' ? 'bg-white text-indigo-900 shadow-2xs' : 'text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    Upload File
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImageInputMode('url')}
+                    className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                      imageInputMode === 'url' ? 'bg-white text-indigo-900 shadow-2xs' : 'text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    Image URL
+                  </button>
+                </div>
               </div>
+
+              {imageInputMode === 'upload' ? (
+                <div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageFileUpload}
+                    className="hidden"
+                  />
+
+                  {itemForm.imageUrl ? (
+                    <div className="p-3 bg-white rounded-2xl border border-indigo-200 flex items-center justify-between gap-4 shadow-2xs">
+                      <div className="flex items-center gap-3">
+                        <img
+                          src={itemForm.imageUrl}
+                          alt="Uploaded Item"
+                          className="w-14 h-14 rounded-xl object-cover border border-gray-200 bg-gray-50"
+                        />
+                        <div>
+                          <p className="text-xs font-bold text-gray-900">Image Uploaded</p>
+                          <p className="text-[11px] text-green-600 font-semibold flex items-center gap-1">
+                            <Check className="w-3 h-3" /> Ready for live auction
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded-lg transition-colors"
+                        >
+                          Change
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setItemForm(prev => ({ ...prev, imageUrl: '' }))
+                            if (fileInputRef.current) fileInputRef.current.value = ''
+                          }}
+                          className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Remove image"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      onClick={() => fileInputRef.current?.click()}
+                      className="border-2 border-dashed border-gray-300 hover:border-indigo-500 rounded-2xl p-6 text-center cursor-pointer bg-white hover:bg-indigo-50/20 transition-all group select-none"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-2 group-hover:scale-110 transition-transform">
+                        <UploadCloud className="w-5 h-5" />
+                      </div>
+                      <p className="text-xs font-bold text-gray-800">
+                        Click to upload image <span className="text-gray-400 font-normal">or drag and drop</span>
+                      </p>
+                      <p className="text-[11px] text-gray-400 mt-0.5">PNG, JPG, WEBP or GIF up to 10MB</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex gap-3 items-center">
+                  <input
+                    value={itemForm.imageUrl}
+                    onChange={(e) => setItemForm({ ...itemForm, imageUrl: e.target.value })}
+                    className="flex-1 px-4 py-3 rounded-xl border border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors text-sm"
+                    placeholder="https://images.unsplash.com/... or image link"
+                  />
+                  {itemForm.imageUrl ? (
+                    <div className="relative group flex-shrink-0">
+                      <img
+                        src={itemForm.imageUrl}
+                        alt="Preview"
+                        className="w-12 h-12 rounded-xl object-cover border border-indigo-200 shadow-sm"
+                        onError={(e) => {
+                          (e.target as HTMLElement).style.display = 'none'
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setItemForm({ ...itemForm, imageUrl: '' })}
+                        className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="w-12 h-12 rounded-xl border border-dashed border-gray-300 flex items-center justify-center text-gray-400 flex-shrink-0">
+                      <ImageIcon className="w-5 h-5" />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-4">

@@ -1,11 +1,60 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { placeBidAction, sellCurrentItemAction, endAuctionAction } from './actions'
 import { formatDistanceToNow } from 'date-fns'
-import { Clock, Users, ArrowUpCircle, Trophy, AlertCircle, Gavel, Loader2, Sparkles } from 'lucide-react'
+import { Clock, Users, ArrowUpCircle, Trophy, AlertCircle, Gavel, Loader2, Sparkles, Zap, Wifi } from 'lucide-react'
 import clsx from 'clsx'
+
+// Lightweight Web Audio Chime & Gavel Synthesizer (zero bundle overhead)
+const playAudioFeedback = (type: 'bid' | 'gavel' | 'outbid') => {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+    if (!AudioCtx) return
+    const ctx = new AudioCtx()
+
+    if (type === 'bid') {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime) // D5
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12) // A5
+      gain.gain.setValueAtTime(0.12, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start()
+      osc.stop(ctx.currentTime + 0.25)
+    } else if (type === 'gavel') {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'triangle'
+      osc.frequency.setValueAtTime(140, ctx.currentTime)
+      osc.frequency.exponentialRampToValueAtTime(45, ctx.currentTime + 0.2)
+      gain.gain.setValueAtTime(0.3, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start()
+      osc.stop(ctx.currentTime + 0.35)
+    } else if (type === 'outbid') {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(440, ctx.currentTime)
+      osc.frequency.exponentialRampToValueAtTime(330, ctx.currentTime + 0.15)
+      gain.gain.setValueAtTime(0.1, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start()
+      osc.stop(ctx.currentTime + 0.2)
+    }
+  } catch {
+    // AudioContext blocked or not supported
+  }
+}
 
 export default function AuctionRoomClient({ 
   auction, 
@@ -27,6 +76,27 @@ export default function AuctionRoomClient({
   const [isSelling, setIsSelling] = useState(false)
   const [timeLeft, setTimeLeft] = useState<string>('')
   const [auctionStatus, setAuctionStatus] = useState<string>(auction.status)
+  const [isConnected, setIsConnected] = useState(true)
+
+  // In-memory Profile Cache (Eliminates repeated network queries on incoming bids)
+  const profileCache = useRef<Map<string, string>>(new Map())
+
+  // Seed cache with initial users
+  useEffect(() => {
+    if (currentUser?.id) {
+      profileCache.current.set(currentUser.id, String(currentUser.user_metadata?.full_name || 'You'))
+    }
+    if (auction?.creator_id && auction?.profiles?.full_name) {
+      profileCache.current.set(auction.creator_id, String(auction.profiles.full_name))
+    }
+    if (Array.isArray(initialParticipants)) {
+      initialParticipants.forEach((p: any) => {
+        if (p?.user_id && p?.profiles?.full_name) {
+          profileCache.current.set(p.user_id, String(p.profiles.full_name))
+        }
+      })
+    }
+  }, [currentUser, auction, initialParticipants])
 
   // Use refs for stable event handler access
   const activeItemRef = useRef<any>(activeItem)
@@ -78,7 +148,7 @@ export default function AuctionRoomClient({
     return () => clearInterval(timer)
   }, [endDateTime, auctionStatus, isCreator, auction.id])
 
-  // 2. Stable Supabase Realtime Subscription
+  // 2. Stable Supabase Realtime Subscription with In-Memory Caching
   useEffect(() => {
     const roomChannel = supabase.channel(`auction_room_${auction.id}`, {
       config: { presence: { key: currentUser.id } }
@@ -101,9 +171,8 @@ export default function AuctionRoomClient({
           const joinedUser = newPresences[0] as any
           setOnlineUsers(prev => new Set([...Array.from(prev), joinedUser.user_id]))
 
-          // Fetch profile if not already in participants list
-          setParticipants(prev => {
-            if (prev.some(p => p.user_id === joinedUser.user_id)) return prev
+          // Check memory cache first
+          if (!profileCache.current.has(joinedUser.user_id)) {
             supabase
               .from('profiles')
               .select('id, full_name')
@@ -111,14 +180,14 @@ export default function AuctionRoomClient({
               .maybeSingle()
               .then(({ data }: { data: any }) => {
                 if (data) {
+                  profileCache.current.set(data.id, data.full_name || 'Participant')
                   setParticipants(current => {
                     if (current.some(p => p.user_id === data.id)) return current
                     return [...current, { user_id: data.id, profiles: data }]
                   })
                 }
               })
-            return prev
-          })
+          }
         }
       })
       .on('presence', { event: 'leave' }, ({ leftPresences }: { leftPresences: any[] }) => {
@@ -134,17 +203,35 @@ export default function AuctionRoomClient({
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'bids' }, async (payload: any) => {
         const currentActive = activeItemRef.current
         if (payload.new && currentActive && payload.new.item_id === currentActive.id) {
-          // Fetch bidder profile
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('full_name')
-            .eq('id', payload.new.bidder_id)
-            .maybeSingle()
+          const bidderId = (payload.new.bidder_id as string) || ''
+          let bidderName = bidderId ? profileCache.current.get(bidderId) : undefined
 
-          const newBid = { ...payload.new, profiles: profile || { full_name: 'Bidder' } }
+          if (bidderId && !bidderName) {
+            // Fetch and cache if not in memory
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('full_name')
+              .eq('id', bidderId)
+              .maybeSingle()
+
+            const resolvedName: string = profile?.full_name || 'Bidder'
+            bidderName = resolvedName
+            profileCache.current.set(bidderId, resolvedName)
+          }
+
+          const newBid = { ...payload.new, profiles: { full_name: bidderName || 'Bidder' } }
           
           setBidHistory(prev => [newBid, ...prev.filter(b => b.id !== newBid.id)])
           
+          // Sound & Haptic feedback
+          if (bidderId === currentUser.id) {
+            playAudioFeedback('bid')
+          } else if (highestBidderId === currentUser.id) {
+            playAudioFeedback('outbid')
+          } else {
+            playAudioFeedback('bid')
+          }
+
           // Update active item current bid
           setActiveItem((prev: any) => ({
             ...prev,
@@ -156,16 +243,19 @@ export default function AuctionRoomClient({
         const updatedItem = payload.new
         setItems(prev => prev.map(item => item.id === updatedItem.id ? updatedItem : item))
         
-        // Trigger Confetti if the user just won this item
-        if (updatedItem.status === 'ENDED' && updatedItem.winner_id === currentUser.id) {
-          import('canvas-confetti').then((confetti) => {
-            confetti.default({
-              particleCount: 150,
-              spread: 80,
-              origin: { y: 0.6 },
-              colors: ['#4f46e5', '#10b981', '#f59e0b', '#ec4899']
+        // Trigger Confetti & Gavel Sound if item ended
+        if (updatedItem.status === 'ENDED') {
+          playAudioFeedback('gavel')
+          if (updatedItem.winner_id === currentUser.id) {
+            import('canvas-confetti').then((confetti) => {
+              confetti.default({
+                particleCount: 150,
+                spread: 80,
+                origin: { y: 0.6 },
+                colors: ['#4f46e5', '#10b981', '#f59e0b', '#ec4899']
+              })
             })
-          })
+          }
         }
 
         const currentActive = activeItemRef.current
@@ -188,18 +278,20 @@ export default function AuctionRoomClient({
       })
       .subscribe(async (status: string) => {
         if (status === 'SUBSCRIBED') {
+          setIsConnected(true)
           await roomChannel.track({ user_id: currentUser.id })
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          setIsConnected(false)
         }
       })
 
     return () => {
       supabase.removeChannel(roomChannel)
     }
-  }, [auction.id, currentUser.id, supabase])
+  }, [auction.id, currentUser.id, supabase, highestBidderId])
 
-  // Handle Bid Placement
-  const handlePlaceBidClick = async (e: React.FormEvent) => {
-    e.preventDefault()
+  // Handle Bid Placement with dynamic custom amount
+  const handlePlaceBidAmount = async (amount: number) => {
     setBidError(null)
 
     if (!activeItem) {
@@ -214,7 +306,7 @@ export default function AuctionRoomClient({
 
     setIsBidding(true)
     try {
-      const res = await placeBidAction(activeItem.id, minNextBid)
+      const res = await placeBidAction(activeItem.id, amount)
       if (res?.error) {
         setBidError(res.error)
       }
@@ -223,6 +315,11 @@ export default function AuctionRoomClient({
     } finally {
       setIsBidding(false)
     }
+  }
+
+  const handlePlaceBidClick = async (e: React.FormEvent) => {
+    e.preventDefault()
+    await handlePlaceBidAmount(minNextBid)
   }
 
   // Handle Selling Item
@@ -262,12 +359,12 @@ export default function AuctionRoomClient({
           </h1>
           <p className="text-sm text-gray-500">Organized by {auction.profiles?.full_name || 'Host'}</p>
         </div>
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <div className={clsx("w-3 h-3 rounded-full animate-pulse", isLive ? "bg-red-500" : "bg-gray-400")} />
-            <span className="font-semibold text-gray-800 tracking-wide">{auctionStatus}</span>
+        <div className="flex items-center gap-4 sm:gap-6">
+          <div className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200">
+            <div className={clsx("w-2.5 h-2.5 rounded-full animate-pulse", isConnected ? (isLive ? "bg-red-500" : "bg-emerald-500") : "bg-amber-500")} />
+            <span className="font-semibold text-xs text-gray-800 tracking-wide">{isConnected ? auctionStatus : 'Reconnecting...'}</span>
           </div>
-          <div className="bg-gray-100 px-4 py-1.5 rounded-lg border border-gray-200 flex items-center gap-2 font-mono text-lg font-bold text-gray-800">
+          <div className="bg-gray-100 px-4 py-1.5 rounded-lg border border-gray-200 flex items-center gap-2 font-mono text-base sm:text-lg font-bold text-gray-800">
             <Clock className="w-4 h-4 text-gray-500" />
             {timeLeft || '00:00:00'}
           </div>
@@ -365,6 +462,7 @@ export default function AuctionRoomClient({
                     </div>
                   ) : (
                     <form onSubmit={handlePlaceBidClick} className="flex flex-col gap-4">
+                      {/* Main Next Bid Button */}
                       <button 
                         type="submit"
                         disabled={!isLive || isBidding}
@@ -382,6 +480,30 @@ export default function AuctionRoomClient({
                           </>
                         )}
                       </button>
+
+                      {/* Quick-Bid Increment Chips */}
+                      <div className="flex items-center gap-3 pt-1">
+                        <span className="text-xs font-semibold text-gray-500 flex items-center gap-1">
+                          <Zap className="w-3.5 h-3.5 text-amber-500" />
+                          Quick Bid:
+                        </span>
+                        {[1, 2, 5].map((multiplier) => {
+                          const quickAmount = currentBidNumber > 0 
+                            ? currentBidNumber + (minIncrementNumber * multiplier)
+                            : startingPriceNumber + (minIncrementNumber * (multiplier - 1))
+                          return (
+                            <button
+                              key={multiplier}
+                              type="button"
+                              disabled={!isLive || isBidding}
+                              onClick={() => handlePlaceBidAmount(quickAmount)}
+                              className="flex-1 py-2 px-3 rounded-xl border border-amber-200 bg-amber-50/70 hover:bg-amber-100 text-amber-900 text-xs font-bold transition-colors disabled:opacity-50"
+                            >
+                              +₹{(minIncrementNumber * multiplier).toLocaleString()} (₹{quickAmount.toLocaleString()})
+                            </button>
+                          )
+                        })}
+                      </div>
                     </form>
                   )}
                   {bidError && (

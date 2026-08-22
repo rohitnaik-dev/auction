@@ -2,12 +2,33 @@
 
 import { createClient } from '@/utils/supabase/server'
 
+// In-memory sliding window rate limiter (max 5 bids per 2 seconds per user)
+const bidRateLimits = new Map<string, number[]>()
+
+function isRateLimited(userId: string, maxRequests = 5, windowMs = 2000): boolean {
+  const now = Date.now()
+  const timestamps = bidRateLimits.get(userId) || []
+  const recent = timestamps.filter(t => now - t < windowMs)
+  
+  if (recent.length >= maxRequests) {
+    return true
+  }
+  
+  recent.push(now)
+  bidRateLimits.set(userId, recent)
+  return false
+}
+
 export async function placeBidAction(itemId: string, amount: number) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
   if (!user) {
     return { error: 'Unauthorized: Please log in to place bids.' }
+  }
+
+  if (isRateLimited(user.id)) {
+    return { error: 'You are placing bids too rapidly. Please wait a second.' }
   }
 
   // Call the Postgres RPC function to safely place a bid and prevent race conditions

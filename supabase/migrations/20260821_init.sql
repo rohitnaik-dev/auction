@@ -143,6 +143,9 @@ CREATE INDEX IF NOT EXISTS idx_bids_item ON bids(item_id);
 CREATE INDEX IF NOT EXISTS idx_bids_bidder ON bids(bidder_id);
 CREATE INDEX IF NOT EXISTS idx_participants_auction ON auction_participants(auction_id);
 CREATE INDEX IF NOT EXISTS idx_participants_user ON auction_participants(user_id);
+CREATE INDEX IF NOT EXISTS idx_bids_item_created_desc ON bids(item_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_auction_items_winner ON auction_items(winner_id) WHERE winner_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_auction_participants_composite ON auction_participants(auction_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_invitations_token ON auction_invitations(token);
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
 
